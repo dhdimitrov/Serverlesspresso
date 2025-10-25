@@ -48,7 +48,7 @@ The workflow ensures reliable order processing with proper error handling and st
 
 ## Resources
 
-- **📊 Presentation with Video Examples**: [Google Slides](https://docs.google.com/presentation/d/1qb1ofxJz_yd7UmhHos3cPPkjZHvlIgAn/edit?slide=id.g36cde9e505e_0_19#slide=id.g36cde9e505e_0_19)
+- **📊 Presentation with Video Examples**: [Google Slides](https://docs.google.com/presentation/d/1qb1ofxJz_yd7UmhHos3cPPkjZHvlIgAn/edit?slide=id.p1)
 - **🎯 Official Workshop**: [AWS Workshop Studio](https://catalog.workshops.aws/serverlesspresso/en-US)
 
 ## Key Learning Outcomes
