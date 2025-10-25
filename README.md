@@ -46,17 +46,6 @@ The Step Functions workflow orchestrates the complete order processing pipeline:
 
 The workflow ensures reliable order processing with proper error handling and state management.
 
-## Getting Started
-
-1. Deploy the core infrastructure:
-   ```bash
-   sam deploy --template-file workshop-self-service.yaml
-   ```
-
-2. Deploy additional stacks (order management, menu, etc.)
-
-3. Configure frontend application with Cognito and AppSync endpoints
-
 ## Resources
 
 - **📊 Presentation with Video Examples**: [Google Slides](https://docs.google.com/presentation/d/1qb1ofxJz_yd7UmhHos3cPPkjZHvlIgAn/edit?slide=id.g36cde9e505e_0_19#slide=id.g36cde9e505e_0_19)
