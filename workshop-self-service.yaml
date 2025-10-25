@@ -1,0 +1,1505 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: Serverlesspresso core stack.
+Parameters:
+  AppName:
+    Type: String
+    Description: Application name (eg. serverlesspresso)
+    Default: Serverlesspresso
+  Service:
+    Type: String
+    Description: Service name (eg. core)
+    Default: core
+  LogRetentionInDays:
+    Type: Number
+    Default: 14
+    Description: CloudWatch Logs retention period
+  TimeInterval:
+    Type: Number
+    Description: Time interval of buckets (mins)
+    Default: 5
+  CodeLength:
+    Type: Number
+    Description: Code length in characters
+    Default: 10
+  TokensPerBucket:
+    Type: Number
+    Description: Tokens in each bucket
+    Default: 10
+  Source:
+    Type: String
+    Description: Event bus source by application
+    Default: awsserverlessda.serverlesspresso
+Globals:
+  Api:
+    Cors:
+      AllowOrigin: '''*'''
+      AllowHeaders: '''Content-Type'''
+      AllowMethods: '''GET,OPTIONS'''
+Mappings:
+  RegionMap: 
+    us-east-1:
+      bucketlocation: ws-assets-prod-iad-r-iad-ed304a55c2ca1aee.s3.us-east-1.amazonaws.com
+      bucket: ws-assets-prod-iad-r-iad-ed304a55c2ca1aee
+    us-west-2:
+      bucketlocation: ws-assets-prod-iad-r-pdx-f3b3f9f1a7d6a3d0.s3.us-west-2.amazonaws.com
+      bucket: ws-assets-prod-iad-r-pdx-f3b3f9f1a7d6a3d0
+    us-east-2:
+      bucketlocation: ws-assets-prod-iad-r-cmh-8d6e9c21a4dec77d.s3.us-east-2.amazonaws.com
+      bucket: ws-assets-prod-iad-r-cmh-8d6e9c21a4dec77d
+    eu-west-1:
+      bucketlocation: ws-assets-prod-iad-r-dub-85e3be25bd827406.s3.eu-west-1.amazonaws.com
+      bucket: ws-assets-prod-iad-r-dub-85e3be25bd827406
+    ap-southeast-1:
+      bucketlocation: ws-assets-prod-iad-r-sin-694a125e41645312.s3.ap-southeast-1.amazonaws.com
+      bucket: ws-assets-prod-iad-r-sin-694a125e41645312
+    ap-southeast-2:
+      bucketlocation: ws-assets-prod-iad-r-syd-b04c62a5f16f7b2e.s3.ap-southeast-2.amazonaws.com
+      bucket: ws-assets-prod-iad-r-syd-b04c62a5f16f7b2e
+    ca-central-1:
+      bucketlocation: ws-assets-prod-iad-r-yul-5c2977cd61bca1f3.s3.ca-central-1.amazonaws.com
+      bucket: ws-assets-prod-iad-r-yul-5c2977cd61bca1f3
+Resources:
+  ServerlesspressoEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: Serverlesspresso
+    Metadata:
+      SamResourceId: ServerlesspressoEventBus
+  CoreEventBusNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name:
+        Fn::Sub: /${AppName}/${Service}/eventbusname
+      Description: EventBus Name
+      Type: String
+      Value:
+        Ref: ServerlesspressoEventBus
+    Metadata:
+      SamResourceId: CoreEventBusNameParameter
+  CoreEventBusARNParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name:
+        Fn::Sub: /${AppName}/${Service}/eventbusarn
+      Description: EventBus ARN
+      Type: String
+      Value:
+        Fn::Sub: ${ServerlesspressoEventBus.Arn}
+    Metadata:
+      SamResourceId: CoreEventBusARNParameter
+
+  AppSyncEventsApi:
+    Type: AWS::AppSync::Api
+    Properties:
+      Name: !Sub ${AWS::StackName}-AppSyncEventAPI
+      EventConfig:
+        ConnectionAuthModes:
+          - AuthType: API_KEY
+          - AuthType: AWS_IAM
+        AuthProviders:
+          - AuthType: API_KEY
+          - AuthType: AWS_IAM
+        DefaultPublishAuthModes:
+          - AuthType: API_KEY
+          - AuthType: AWS_IAM
+        DefaultSubscribeAuthModes:
+          - AuthType: API_KEY
+          - AuthType: AWS_IAM
+ 
+  EventApiNameSpace:
+    Type: AWS::AppSync::ChannelNamespace
+    Properties:
+      ApiId: !GetAtt AppSyncEventsApi.ApiId
+      Name: 'serverlesspresso'
+  
+  EventAPIKey:
+    Type: AWS::AppSync::ApiKey
+    Properties:
+      ApiId: !GetAtt AppSyncEventsApi.ApiId
+      Description: API Key for Events API
+
+  PublisherFunctionUser:
+    Type: AWS::Serverless::Function
+    Description: Serverlesspresso Publisher. Invoked by EventBridge rule
+    Properties:
+      CodeUri: 
+          Key: "28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/PublisherFunction.zip"
+          Bucket: !FindInMap [RegionMap, !Ref "AWS::Region", bucket]
+      Handler: publishToAppSyncUser.handler
+      Runtime: nodejs22.x
+      Timeout: 3      
+      Environment:
+        Variables:
+          APPSYNC_EVENTS_ENDPOINT:
+            !GetAtt AppSyncEventsApi.Dns.Http
+          APPSYNC_API_KEY:
+            !GetAtt EventAPIKey.ApiKey
+          APPSYNC_CHANNEL_NAMESPACE: 
+            'serverlesspresso'
+          APPSYNC_CHANNEL: user  
+      Events:
+        OrderManagerEvents:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: Serverlesspresso
+            Pattern:
+              source:
+              - Ref: Source
+              detail-type:
+              - prefix: OrderManager.
+        OrderProcessorEvents:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: Serverlesspresso
+            Pattern:
+              source:
+              - Ref: Source
+              detail-type:
+              - prefix: OrderProcessor.
+        ReviewProcessorEvents:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: Serverlesspresso
+            Pattern:
+              source:
+              - Ref: Source
+              detail-type:
+              - prefix: ReviewProcessor.      
+    Metadata:
+      SamResourceId: PublisherFunctionUser
+
+  PublisherFunctionConfig:
+    Type: AWS::Serverless::Function
+    Description: Serverlesspresso Publisher. Invoked by EventBridge rule
+    Properties:
+      CodeUri: 
+          Key: "28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/PublisherFunction.zip"
+          Bucket: !FindInMap [RegionMap, !Ref "AWS::Region", bucket]
+      Handler: publishToAppSync.handler
+      Runtime: nodejs22.x
+      Timeout: 3       
+      Environment:
+        Variables:
+          APPSYNC_EVENTS_ENDPOINT:
+            !GetAtt AppSyncEventsApi.Dns.Http
+          APPSYNC_API_KEY:
+            !GetAtt EventAPIKey.ApiKey
+          APPSYNC_CHANNEL_NAMESPACE: 
+            'serverlesspresso'
+          APPSYNC_CHANNEL: config
+      Events:
+        TriggerValidator:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: Serverlesspresso
+            Pattern:
+              source:
+              - Ref: Source
+              detail-type:
+              - prefix: ConfigService.
+    Metadata:
+      SamResourceId: PublisherFunctionConfig
+
+  PublisherFunctionAdmin:
+    Type: AWS::Serverless::Function
+    Description: Serverlesspresso Publisher. Invoked by EventBridge rule
+    Properties:
+      CodeUri: 
+          Key: "28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/PublisherFunction.zip"
+          Bucket: !FindInMap [RegionMap, !Ref "AWS::Region", bucket]
+      Handler: publishToAppSync.handler
+      Runtime: nodejs22.x
+      Timeout: 3      
+      Environment:
+        Variables:
+          APPSYNC_EVENTS_ENDPOINT:
+            !GetAtt AppSyncEventsApi.Dns.Http
+          APPSYNC_API_KEY:
+            !GetAtt EventAPIKey.ApiKey
+          APPSYNC_CHANNEL_NAMESPACE: 
+            'serverlesspresso'
+          APPSYNC_CHANNEL: admin
+      Events:
+        Trigger:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: Serverlesspresso
+            Pattern:
+              source:
+              - Ref: Source
+              detail-type:
+              - prefix: OrderManager.
+              - prefix: OrderProcessor.
+              - prefix: Validator.
+              - prefix: ConfigService.
+              - prefix: ReviewProcessor.
+    Metadata:
+      SamResourceId: PublisherFunctionAdmin
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: ServerlesspressoUserPool
+      AutoVerifiedAttributes:
+      - email
+      EmailVerificationMessage: 'Here is your Serverlesspresso workshop verification
+        code: {####}.'
+      EmailVerificationSubject: Serverlesspresso workshop code
+      MfaConfiguration: 'OFF'
+      Schema:
+      - Name: email
+        AttributeDataType: String
+        Mutable: false
+        Required: true
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 6
+          RequireLowercase: false
+          RequireNumbers: false
+          RequireSymbols: false
+          RequireUppercase: false
+    Metadata:
+      SamResourceId: UserPool
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      GenerateSecret: false
+      UserPoolId:
+        Ref: UserPool
+    Metadata:
+      SamResourceId: UserPoolClient
+  UserPoolParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name:
+        Fn::Sub: /${AppName}/${Service}/userpool
+      Description: UserPool ID
+      Type: String
+      Value:
+        Ref: UserPool
+    Metadata:
+      SamResourceId: UserPoolParameter
+  UserPoolClientParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name:
+        Fn::Sub: /${AppName}/${Service}/userpoolclient
+      Description: UserPool Client
+      Type: String
+      Value:
+        Ref: UserPoolClient
+    Metadata:
+      SamResourceId: UserPoolClientParameter
+  IdentityPool:
+    Type: AWS::Cognito::IdentityPool
+    Properties:
+      IdentityPoolName: ServerlesspressoIdentityPool
+      AllowUnauthenticatedIdentities: true
+      CognitoIdentityProviders:
+      - ClientId:
+          Ref: UserPoolClient
+        ProviderName:
+          Fn::GetAtt:
+          - UserPool
+          - ProviderName
+    Metadata:
+      SamResourceId: IdentityPool
+  CognitoUnAuthorizedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+          Action:
+          - sts:AssumeRoleWithWebIdentity
+          Condition:
+            StringEquals:
+              cognito-identity.amazonaws.com:aud:
+                Ref: IdentityPool
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: unauthenticated
+      Policies:
+      - PolicyName: CognitoUnauthorizedPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - cognito-sync:*
+            Resource:
+              Fn::Join:
+              - ''
+              - - 'arn:aws:cognito-sync:'
+                - Ref: AWS::Region
+                - ':'
+                - Ref: AWS::AccountId
+                - :identitypool/
+                - Ref: IdentityPool
+    Metadata:
+      SamResourceId: CognitoUnAuthorizedRole
+  CognitoAuthorizedRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Federated: cognito-identity.amazonaws.com
+          Action:
+          - sts:AssumeRoleWithWebIdentity
+          Condition:
+            StringEquals:
+              cognito-identity.amazonaws.com:aud:
+                Ref: IdentityPool
+            ForAnyValue:StringLike:
+              cognito-identity.amazonaws.com:amr: authenticated
+      Policies:
+      - PolicyName: CognitoAuthorizedPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+            - cognito-sync:*
+            Resource:
+              Fn::Join:
+              - ''
+              - - 'arn:aws:cognito-sync:'
+                - Ref: AWS::Region
+                - ':'
+                - Ref: AWS::AccountId
+                - :identitypool/
+                - Ref: IdentityPool
+          - Effect: Allow
+            Action:
+            - appsync:EventConnect
+            - appsync:EventPublish
+            - appsync:EventSubscribe
+            Resource:
+              Fn::Join:
+              - ''
+              - - Ref: AppSyncEventsApi
+                - '/*'
+    Metadata:
+      SamResourceId: CognitoAuthorizedRole
+  IdentityPoolRoleMapping:
+    Type: AWS::Cognito::IdentityPoolRoleAttachment
+    Properties:
+      IdentityPoolId:
+        Ref: IdentityPool
+      Roles:
+        authenticated:
+          Fn::GetAtt:
+          - CognitoAuthorizedRole
+          - Arn
+        unauthenticated:
+          Fn::GetAtt:
+          - CognitoUnAuthorizedRole
+          - Arn
+    Metadata:
+      SamResourceId: IdentityPoolRoleMapping
+  CountingTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: serverlesspresso-counting-table
+      AttributeDefinitions:
+      - AttributeName: PK
+        AttributeType: S
+      KeySchema:
+      - AttributeName: PK
+        KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+    Metadata:
+      SamResourceId: CountingTable
+  ConfigTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: serverlesspresso-config-table
+      AttributeDefinitions:
+      - AttributeName: PK
+        AttributeType: S
+      KeySchema:
+      - AttributeName: PK
+        KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+    Metadata:
+      SamResourceId: ConfigTable
+  RESTApConfigService:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      DefinitionBody:
+        Fn::Transform:
+          Name: AWS::Include
+          Parameters:
+            Location: s3://ws-assets-prod-iad-r-iad-ed304a55c2ca1aee/28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/ConfigServiceRESTAPI.yaml
+    Metadata:
+      SamResourceId: RESTApConfigService
+  ConfigChangedFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: |
+        'use strict';
+        const { DynamoDBDocument } = require('@aws-sdk/lib-dynamodb');
+        const { DynamoDB } = require('@aws-sdk/client-dynamodb');
+        const { EventBridge } = require('@aws-sdk/client-eventbridge');
+
+        const documentClient = DynamoDBDocument.from(new DynamoDB())
+        const eventbridge = new EventBridge({
+          region: process.env.AWS_REGION
+        })
+
+        // Returns application config
+        exports.handler = async (event) => {
+          console.log(JSON.stringify(event, null, 0))
+          const NewImage = event.Records[0].dynamodb.NewImage
+
+          // Publish to EventBridge with change info
+          const params = {
+            Entries: [
+              {
+                Detail: JSON.stringify({ NewImage }),
+                DetailType: 'ConfigService.ConfigChanged',
+                EventBusName: process.env.EventBusName,
+                Source: process.env.Source,
+                Time: new Date
+              }
+            ]
+          }
+
+          console.log('Event: ', JSON.stringify(params, null, 0))
+          const response = await eventbridge.putEvents(params)
+          console.log('EventBridge putEvents:', response)
+        }
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          EventBusName:
+            Ref: ServerlesspressoEventBus
+          Source:
+            Ref: Source
+      Policies:
+      - DynamoDBReadPolicy:
+          TableName:
+            Ref: ConfigTable
+      - EventBridgePutEventsPolicy:
+          EventBusName:
+            Ref: ServerlesspressoEventBus
+      Events:
+        Stream:
+          Type: DynamoDB
+          Properties:
+            Stream:
+              Fn::GetAtt:
+              - ConfigTable
+              - StreamArn
+            BatchSize: 1
+            StartingPosition: TRIM_HORIZON
+    Metadata:
+      SamResourceId: ConfigChangedFunction
+  ConfigRESTApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - apigateway.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName: DynamoDBinteraction
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - dynamodb:Scan
+            - dynamodb:GetItem
+            - dynamodb:UpdateItem
+            Resource:
+              Fn::GetAtt:
+              - ConfigTable
+              - Arn
+          - Effect: Allow
+            Action:
+            - dynamodb:Query
+            Resource:
+              Fn::Sub:
+              - ${tableArn}${index}
+              - tableArn:
+                  Fn::GetAtt:
+                  - ConfigTable
+                  - Arn
+                index: /index/*
+    Metadata:
+      SamResourceId: ConfigRESTApiRole
+  GetQRcodeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: 
+        Key: "28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/QRcode.zip"
+        Bucket: !FindInMap [RegionMap, !Ref "AWS::Region", bucket]
+      Handler: getCode.handler
+      Runtime: nodejs20.x
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+          TableName:
+            Ref: ValidatorTable
+          TimeInterval:
+            Ref: TimeInterval
+          CodeLength:
+            Ref: CodeLength
+          TokensPerBucket:
+            Ref: TokensPerBucket
+          BusName:
+            Ref: ServerlesspressoEventBus
+          Source:
+            Ref: Source
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: ValidatorTable
+      Events:
+        GetQrCode:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: RESTApiValidatorService
+            Path: /qr-code
+            Method: get
+            Auth:
+              Authorizer: MyCognitoAuthorizor
+              AuthorizationScopes:
+              - aws.cognito.signin.user.admin
+    Metadata:
+      SamResourceId: GetQRcodeFunction
+  VerifyQRcodeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: 
+        Key: "28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/QRcode.zip"
+        Bucket: !FindInMap [RegionMap, !Ref "AWS::Region", bucket]
+      Handler: verifyCode.handler
+      Runtime: nodejs20.x
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          AWS_NODEJS_CONNECTION_REUSE_ENABLED: 1
+          TableName:
+            Ref: ValidatorTable
+          TimeInterval:
+            Ref: TimeInterval
+          CodeLength:
+            Ref: CodeLength
+          TokensPerBucket:
+            Ref: TokensPerBucket
+          BusName:
+            Ref: ServerlesspressoEventBus
+          Source:
+            Ref: Source
+      Policies:
+      - EventBridgePutEventsPolicy:
+          EventBusName:
+            Ref: ServerlesspressoEventBus
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: ValidatorTable
+      Events:
+        GetQrCode:
+          Type: Api
+          Properties:
+            RestApiId:
+              Ref: RESTApiValidatorService
+            Path: /qr-code
+            Method: POST
+            Auth:
+              Authorizer: MyCognitoAuthorizor
+              AuthorizationScopes:
+              - aws.cognito.signin.user.admin
+    Metadata:
+      SamResourceId: VerifyQRcodeFunction
+  RESTApiValidatorService:
+    Type: AWS::Serverless::Api
+    Name: RESTApiValidatorService
+    Properties:
+      StageName: Prod
+      Cors:
+        AllowOrigin: '''*'''
+        AllowHeaders: '''*'''
+        AllowMethods: '''GET,POST,OPTIONS'''
+      Auth:
+        DefaultAuthorizer: MyCognitoAuthorizor
+        AddDefaultAuthorizerToCorsPreflight: false
+        Authorizers:
+          MyCognitoAuthorizor:
+            UserPoolArn:
+              Fn::GetAtt:
+              - UserPool
+              - Arn
+    Metadata:
+      SamResourceId: RESTApiValidatorService
+  ValidatorTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: serverlesspresso-validator-table
+      AttributeDefinitions:
+      - AttributeName: PK
+        AttributeType: N
+      KeySchema:
+      - AttributeName: PK
+        KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+    Metadata:
+      SamResourceId: ValidatorTable
+  FillDatabasesCustomResource:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: 
+        Key: "28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/FillDatabase.zip"
+        Bucket: !FindInMap [RegionMap, !Ref "AWS::Region", bucket]
+      Handler: app.handler
+      Runtime: nodejs20.x
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          configTable:
+            Ref: ConfigTable
+          countingTable:
+            Ref: CountingTable
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: ConfigTable
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: CountingTable
+    Metadata:
+      SamResourceId: FillDatabasesCustomResource
+  DeploymentCustomResourcePrefil:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken:
+        Fn::GetAtt:
+        - FillDatabasesCustomResource
+        - Arn
+    Metadata:
+      SamResourceId: DeploymentCustomResourcePrefil
+  StateMachineLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName:
+        Fn::Join:
+        - /
+        - - stepfunctions
+          - StateMachineExpressSync
+    Metadata:
+      SamResourceId: StateMachineLogGroup
+  ValidatorNewOrderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: |
+        'use strict'
+        const { DynamoDBDocument } = require('@aws-sdk/lib-dynamodb');
+        const { DynamoDB } = require('@aws-sdk/client-dynamodb');
+
+        const documentClient = DynamoDBDocument.from(new DynamoDB())
+
+        // Triggered by event: DetailType: "Validator.NewOrder"
+
+        exports.handler = async (event) => {
+          console.log(JSON.stringify(event, null, 2))
+
+          const result = await documentClient.put({
+            TableName: process.env.TableName,
+            Item: {
+              PK: 'orders',
+              SK: event.detail.orderId,
+              USERID: event.detail.userId,
+              ORDERSTATE: 'CREATED',
+              bucketState: event.detail.bucket,
+              robot: (event.detail.robot || false),
+              TS: Date.now()
+            }
+          })
+
+          console.log({ result })
+        }
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          TableName:
+            Ref: OrderTable
+      Policies:
+      - DynamoDBWritePolicy:
+          TableName:
+            Ref: OrderTable
+    Metadata:
+      SamResourceId: ValidatorNewOrderFunction
+  SanitizeOrderLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: 
+        Key: "28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/SanitizeOrderLambda.zip"
+        Bucket: !FindInMap [RegionMap, !Ref "AWS::Region", bucket]
+      Handler: app.handler
+      Runtime: nodejs20.x
+      Timeout: 20
+      MemorySize: 128
+    Metadata:
+      SamResourceId: SanitizeOrderLambda
+  GetOrderByIdFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: |
+        'use strict'
+        const { DynamoDBDocument } = require("@aws-sdk/lib-dynamodb");
+        const { DynamoDB } = require("@aws-sdk/client-dynamodb");
+        const { SFN } = require("@aws-sdk/client-sfn");
+
+        const stepFunctions = new SFN({
+          region: process.env.AWS_REGION,
+        })
+        const documentClient = DynamoDBDocument.from(new DynamoDB())
+
+        // Update order
+        const getOrder = async (record) => {
+          const params = {
+            TableName: process.env.TableName,
+            Key: {
+              PK: 'orders',
+              SK: record.orderId,
+            }
+          }
+          // console.log(params)
+          const result = await documentClient.get(params)
+          // console.log(result)
+
+          return {
+            orderId: record.orderId,
+            drinkOrder: result.Item.drinkOrder,
+            orderState: result.Item.ORDERSTATE,
+            TS: result.TS
+          }
+        }
+
+        // Returns list of open orders, sorted by time
+        exports.handler = async (event) => {
+          console.log(JSON.stringify(event, null, 2))
+
+          const record = {
+            orderId: event.pathParameters.id,
+            userId: event.requestContext.authorizer.jwt.claims.sub
+          }
+
+          const result = await getOrder(record)
+
+          return {
+            "statusCode": 200,
+            "body": JSON.stringify({ result }),
+            "isBase64Encoded": false
+          }
+        }
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 15
+      MemorySize: 128
+    Metadata:
+      SamResourceId: GetOrderByIdFunction
+  WorkFlowStarted:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: | 
+        const { DynamoDBDocument } = require('@aws-sdk/lib-dynamodb');
+        const { DynamoDB } = require('@aws-sdk/client-dynamodb');
+
+        const documentClient = DynamoDBDocument.from(new DynamoDB())
+
+        // Returns details of a Place ID where the app has user-generated content.
+        exports.handler = async (event) => {
+          console.log(JSON.stringify(event, null, 2))
+          
+            const params ={
+            TableName: process.env.TableName,
+            Item: {
+              PK: 'orders',
+              SK: event.detail.orderId,
+              USERID: event.detail.userId,
+              ORDERSTATE: 'CREATED',
+              TaskToken: event.detail.TaskToken,
+              robot: (event.detail.robot || false),
+              TS: Date.now()
+            }
+          }
+
+          console.log(params)
+          const result = await documentClient.put(params)
+        }
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          TableName:
+            Ref: OrderTable
+      Policies:
+      - DynamoDBWritePolicy:
+          TableName:
+            Ref: OrderTable
+    Metadata:
+      SamResourceId: WorkFlowStarted
+  WaitingCompletion:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: | 
+        'use strict'
+        const { DynamoDBDocument } = require("@aws-sdk/lib-dynamodb");
+        const { DynamoDB } = require("@aws-sdk/client-dynamodb");
+        const { EventBridge } = require("@aws-sdk/client-eventbridge");
+
+        const documentClient = DynamoDBDocument.from(new DynamoDB())
+        const eventbridge = new EventBridge({
+          region: process.env.AWS_REGION,
+        })
+
+        // Returns details of a Place ID where the app has user-generated content.
+        exports.handler = async (event) => {
+          console.log(JSON.stringify(event, null, 2))
+
+          const params = {
+            TableName: process.env.TableName,
+            Key: {
+              PK: 'orders',
+              SK: event.detail.orderId,
+            },
+            UpdateExpression: "set TS = :TS, TaskToken = :TaskToken, orderNumber = :orderNumber",
+            ConditionExpression: "#userId = :userId",
+            ExpressionAttributeNames:{
+              "#userId": "USERID"
+            },
+            ExpressionAttributeValues:{
+              ":userId": event.detail.userId,
+              ":TaskToken": event.detail.TaskToken,
+              ":orderNumber": event.detail.orderNumber,
+              ":TS": Date.now()
+            },
+            ReturnValues: "ALL_NEW"
+          }
+
+          console.log(params)
+          const result = await documentClient.update(params)
+          console.log(result)
+
+          // Publish event to EventBridge
+          const ebParams = {
+            Entries: [
+              {
+                Detail: JSON.stringify({
+                  orderId: result.Attributes.SK,
+                  orderNumber: result.Attributes.orderNumber,
+                  state: result.Attributes.ORDERSTATE,
+                  drinkOrder: JSON.parse(result.Attributes.drinkOrder),
+                  userId: result.Attributes.USERID,
+                  robot: result.Attributes.robot,
+                  TS: result.Attributes.TS,
+                  Message:"A Lambda function is invoked which stores the Step Functions Task Token in an Amazon DynamoDB table. The Task Token is later used to resume the workflow when the barista completes or cancels the order."
+                }),
+                DetailType: 'OrderManager.WaitingCompletion',
+                EventBusName: process.env.BusName,
+                Source: process.env.Source,
+                Time: new Date
+              }
+            ]
+          }
+
+          console.log('publishEvent: ', ebParams)
+          const response = await eventbridge.putEvents(ebParams)
+          console.log('EventBridge putEvents:', response)
+        }
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          TableName:
+            Ref: OrderTable
+          BusName:
+            Ref: ServerlesspressoEventBus
+          Source:
+            Ref: Source
+      Policies:
+      - DynamoDBWritePolicy:
+          TableName:
+            Ref: OrderTable
+      - EventBridgePutEventsPolicy:
+          EventBusName:
+            Ref: ServerlesspressoEventBus
+    Metadata:
+      SamResourceId: WaitingCompletion
+  OrderTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: serverlesspresso-order-table
+      AttributeDefinitions:
+      - AttributeName: PK
+        AttributeType: S
+      - AttributeName: SK
+        AttributeType: S
+      - AttributeName: TS
+        AttributeType: N
+      - AttributeName: ORDERSTATE
+        AttributeType: S
+      - AttributeName: USERID
+        AttributeType: S
+      KeySchema:
+      - AttributeName: PK
+        KeyType: HASH
+      - AttributeName: SK
+        KeyType: RANGE
+      LocalSecondaryIndexes:
+      - IndexName: LSI-timestamp
+        KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: TS
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
+      GlobalSecondaryIndexes:
+      - IndexName: GSI-status
+        KeySchema:
+        - AttributeName: ORDERSTATE
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
+      - IndexName: GSI-userId
+        KeySchema:
+        - AttributeName: USERID
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+        Projection:
+          ProjectionType: ALL
+      BillingMode: PAY_PER_REQUEST
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+    Metadata:
+      SamResourceId: OrderTable
+  RESTApiForOrderManager:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      DefinitionBody:
+        Fn::Transform:
+          Name: AWS::Include
+          Parameters:
+            Location: s3://ws-assets-prod-iad-r-iad-ed304a55c2ca1aee/28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/ORDERMANAGERRESTAPI.yaml
+    Metadata:
+      SamResourceId: RESTApiForOrderManager
+  RESTApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - apigateway.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName: DynamoDBinteraction
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - states:StartExecution
+            Resource:
+              Fn::GetAtt:
+              - 'OrderManagerStateMachine'
+              - Arn
+          - Effect: Allow
+            Action:
+            - dynamodb:GetItem
+            Resource:
+              Fn::GetAtt:
+              - OrderTable
+              - Arn
+          - Effect: Allow
+            Action:
+            - dynamodb:Query
+            Resource:
+              Fn::Sub:
+              - ${tableArn}${index}
+              - tableArn:
+                  Fn::GetAtt:
+                  - OrderTable
+                  - Arn
+                index: /index/*
+    Metadata:
+      SamResourceId: RESTApiRole
+  'OrderManagerStateMachine':
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri:
+        Bucket: !FindInMap [RegionMap, !Ref "AWS::Region", bucket]
+        Key: "28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/sfn-definition.json"
+      DefinitionSubstitutions:
+        OMTable:
+          Ref: OrderTable
+        ConfigTable:
+          Ref: ConfigTable
+        SanitizeOrderLambda:
+          Ref: SanitizeOrderLambda
+      Policies:
+      - EventBridgePutEventsPolicy:
+          EventBusName:
+            Ref: ServerlesspressoEventBus
+      - LambdaInvokePolicy:
+          FunctionName:
+            Ref: SanitizeOrderLambda
+      - DynamoDBReadPolicy:
+          TableName:
+            Ref: ConfigTable
+      - DynamoDBWritePolicy:
+          TableName:
+            Ref: OrderTable
+      - Statement:
+        - Sid: SendTaskSuccess
+          Effect: Allow
+          Action:
+          - states:SendTaskSuccess
+          Resource: '*'
+    Metadata:
+      SamResourceId: 'OrderManagerStateMachine'
+  '01OrderProcessorRole':
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - states.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: /
+    Metadata:
+      SamResourceId: '01OrderProcessorRole'
+  RolePolicies:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: orderProcessorWFPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action: events:PutEvents
+          Resource:
+            Fn::GetAtt:
+            - ServerlesspressoEventBus
+            - Arn
+        - Effect: Allow
+          Action: dynamodb:GetItem
+          Resource:
+            Fn::GetAtt:
+            - ConfigTable
+            - Arn
+        - Effect: Allow
+          Action: dynamodb:UpdateItem
+          Resource:
+            Fn::GetAtt:
+            - ConfigTable
+            - Arn
+        - Effect: Allow
+          Action: dynamodb:UpdateItem
+          Resource:
+            Fn::GetAtt:
+            - CountingTable
+            - Arn
+        - Effect: Allow
+          Action: states:ListExecutions
+          Resource:
+            Fn::Join:
+            - ''
+            - - 'arn:aws:states:'
+              - Ref: AWS::Region
+              - ':'
+              - Ref: AWS::AccountId
+              - ':stateMachine:'
+              - '*'
+      Roles:
+      - Ref: '01OrderProcessorRole'
+    Metadata:
+      SamResourceId: RolePolicies
+
+  # Review workflow - Human approval helper data (task token) storage table
+  ReviewWorkflowTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: serverlesspresso-review-workflow-table
+      AttributeDefinitions:
+        - AttributeName: runid
+          AttributeType: S
+      KeySchema:
+        - AttributeName: runid
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+    Metadata:
+      SamResourceId: ReviewWorkflowTable
+
+  # Review workflow - Human approval helper lambda function execution role
+  ReviewHumanApprovalHelperFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-review-workflow-lambda-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub ${AWS::StackName}-review-workflow-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*"
+              - Effect: Allow
+                Action:
+                  - states:SendTaskSuccess
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !GetAtt ReviewWorkflowTable.Arn
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/Serverlesspresso"
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                  - ssm:GetParametersByPath
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/serverlesspresso/HumanReviewAPIURL"
+    Metadata:
+      SamResourceId: ReviewHumanApprovalHelperFunctionRole
+
+  # Review workflow - Human approval helper lambda function
+  ReviewHumanApprovalHelperFunction:
+    Type: AWS::Serverless::Function
+    Description: Serverlesspresso customer review workflow - human approval helper function.
+    Properties:
+      Handler: ReviewHumanApprovalHelper.lambda_handler
+      Runtime: python3.12
+      Timeout: 60
+      Role: !GetAtt ReviewHumanApprovalHelperFunctionRole.Arn
+      CodeUri:
+        Key: "28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/ReviewHumanApprovalHelperLambda.zip"
+        Bucket: !FindInMap [RegionMap, !Ref "AWS::Region", bucket]
+      Events:
+        Callback:
+          Type: Api
+          Properties:
+            Path: /review
+            Method: get
+            RestApiId:
+              Ref: ReviewHumanApprovalRspAutomationApi
+      Environment:
+        Variables:
+          DYNAMO_DB_NAME: !Ref ReviewWorkflowTable
+          SSM_PARAM: "/serverlesspresso/HumanReviewAPIURL"
+    Metadata:
+      SamResourceId: ReviewHumanApprovalHelperFunction
+
+  # Review workflow - Human approval response automation API
+  ReviewHumanApprovalRspAutomationApi:
+    Type: AWS::Serverless::Api
+    DependsOn: ReviewHumanApprovalHelperFunction
+    Properties:
+      StageName: prod
+      Cors:
+        AllowMethods: "'OPTIONS,GET'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+      DefinitionBody:
+        swagger: 2.0
+        info:
+          version: "1.0"
+          title: "HumanReviewApprovalAPI"
+        basePath: /prod
+        schemes:
+          - "https"
+        paths:
+          /review:
+            get:
+              responses: {}
+              x-amazon-apigateway-integration:
+                uri:
+                  Fn::Sub: arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ReviewHumanApprovalHelperFunction.Arn}/invocations
+                passthroughBehavior: "when_no_match"
+                httpMethod: "POST"
+                type: "aws_proxy"
+    Metadata:
+      SamResourceId: ReviewHumanApprovalRspAutomationApi
+
+  # SSM parameter with the ReviewHumanApprovalRspAutomationApi url
+  ReviewHumanApprovalRspAutomationApiSSM:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: "/serverlesspresso/HumanReviewAPIURL" #must be same name as the Lambda env var
+      Type: String
+      Value: !Sub "https://${ReviewHumanApprovalRspAutomationApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+    Metadata:
+      SamResourceId: ReviewHumanApprovalRspAutomationApiSSM 
+
+  # Review workflow - step function execution role
+  ReviewWorkflowSfnRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-review-workflow-sfn-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+      Path: /
+      Policies:
+        - PolicyName: !Sub ${AWS::StackName}-review-workflow-sfn-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub "${ReviewHumanApprovalHelperFunction.Arn}:$LATEST"
+              - Effect: Allow
+                Action:
+                  - Bedrock:InvokeModel
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/anthropic.claude-v2"
+                  - !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/anthropic.claude-3-sonnet-20240229-v1:0"
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/Serverlesspresso"
+              - Effect: Allow
+                Action:
+                  - comprehend:DetectToxicContent
+                Resource: "*"
+    Metadata:
+      SamResourceId: ReviewWorkflowSfnRole
+
+  ReviewWorkflowStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      DefinitionUri:
+        Bucket: !FindInMap [RegionMap, !Ref "AWS::Region", bucket]
+        Key: "28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/review-sfn-definition-partial.json"
+      DefinitionSubstitutions:
+        HumanReviewHelperFunction:
+          Ref: ReviewHumanApprovalHelperFunction
+        AccountId: 
+          Ref: "AWS::AccountId"
+        Region:
+          Ref: "AWS::Region"
+      Role: !GetAtt ReviewWorkflowSfnRole.Arn
+    Metadata:
+      SamResourceId: "ReviewWorkflowStateMachine"
+
+  ReviewRestApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      DefinitionBody:
+        Fn::Transform:
+          Name: AWS::Include
+          Parameters:
+            Location: s3://ws-assets-prod-iad-r-iad-ed304a55c2ca1aee/28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/ReviewRestApi.yaml
+    Metadata:
+      SamResourceId: ReviewRestApi
+
+  ReviewRESTApiRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - apigateway.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Policies:
+      - PolicyName: EventBridgePutEvents
+        PolicyDocument:
+          Version: 2012-10-17
+          Statement:
+          - Effect: Allow
+            Action:
+            - events:PutEvents
+            Resource: '*'
+    Metadata:
+      SamResourceId: ReviewRESTApiRole
+
+  NewReviewFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      InlineCode: |
+        const { SFNClient, StartExecutionCommand } = require("@aws-sdk/client-sfn");
+        const sfnClient = new SFNClient();
+
+        exports.handler = async (event) => {
+          const stateMachineArn = process.env.ReviewStateMachine;
+          console.log("Received event ", event);
+          try {
+            const response = await sfnClient.send(
+              new StartExecutionCommand({
+                stateMachineArn,
+              input: JSON.stringify(event.detail),
+              }),
+            );
+            console.log(`Step Functions execution started: ${response.executionArn}`);
+            return { statusCode: 200, body: JSON.stringify(response) };
+          } catch (err) {
+            console.error("Error starting Step Functions execution:", err);
+            return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
+          }
+        };
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 15
+      MemorySize: 128
+      Environment:
+        Variables:
+          ReviewStateMachine:
+            Ref: ReviewWorkflowStateMachine
+      Policies:
+      - Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - states:StartExecution
+          Resource:
+            Fn::GetAtt:
+              - 'ReviewWorkflowStateMachine'
+              - Arn
+      Events:
+        ReviewProcessorEvents:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: Serverlesspresso
+            Pattern:
+              source:
+              - Ref: Source
+              detail-type:
+              - prefix: ReviewProcessor.NewReview
+    Metadata:
+      SamResourceId: NewReviewFunction
+
+  ReviewHandlerLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: 
+          Key: "28e7066a-b0bb-42ad-a0e9-8e8eeeb51133/ReviewHandlerLambda.zip"
+          Bucket: !FindInMap [RegionMap, !Ref "AWS::Region", bucket]
+      Handler: ReviewHandlerLambda.handler
+      Runtime: nodejs20.x
+      Timeout: 15
+      MemorySize: 256
+      Environment:
+        Variables:
+          TABLE_NAME:
+            Ref: OrderTable
+      Policies:
+      - DynamoDBCrudPolicy:
+          TableName:
+            Ref: OrderTable
+      Events:
+        APIGW:
+          Type: Api
+          Properties:
+            Path: /review
+            Method: get
+            RestApiId:
+              Ref: ReviewRestApi
+        ReviewProcessorEvents:
+          Type: EventBridgeRule
+          Properties:
+            EventBusName: Serverlesspresso
+            Pattern:
+              source:
+              - Ref: Source
+              detail-type:
+              - prefix: ReviewProcessor.
+    Metadata:
+      SamResourceId: ReviewManagerFunction
+
+Outputs:
+  EventApiHttpURL:
+    Description: "AppSync Events API Endpoint"
+    Value: !GetAtt AppSyncEventsApi.Dns.Http
+  EventApiKey: 
+    Value: !GetAtt EventAPIKey.ApiKey
+  DisplayAppURI:
+    Description: The URL for the Display App
+    Value:
+      Fn::Sub:
+      - https://workshop-display.serverlesscoffee.com/?region=${AWS::Region}&userPoolId=${UserPoolID}&userPoolWebClientId=${UserPoolWebClientId}&orderManagerEndpoint=${OrderManagerEndpoint}&APIGWEndpointValidatorService=${APIGWEndpointValidatorService}&APIGWEndpointConfigService=${APIGWEndpointConfigService}&APIGWEndpointReviewService=${APIGWEndpointReviewService}
+      - UserPoolID:
+          Ref: UserPool
+        UserPoolWebClientId:
+          Ref: UserPoolClient
+        OrderManagerEndpoint:
+          Fn::Sub: https://${RESTApiForOrderManager}.execute-api.${AWS::Region}.amazonaws.com/Prod/
+        APIGWEndpointValidatorService:
+          Fn::Sub: https://${RESTApiValidatorService}.execute-api.${AWS::Region}.amazonaws.com/Prod/
+        APIGWEndpointConfigService:
+          Fn::Sub: https://${RESTApConfigService}.execute-api.${AWS::Region}.amazonaws.com/Prod/
+        APIGWEndpointReviewService:
+          Fn::Sub: https://${ReviewRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/

@@ -1,0 +1,207 @@
+{
+  "Comment": "A description of my state machine",
+  "StartAt": "DynamoDB Get Shop status",
+  "States": {
+    "DynamoDB Get Shop status": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:getItem",
+      "Arguments": {
+        "TableName": "serverlesspresso-config-table",
+        "Key": {
+          "PK": {
+            "S": "config"
+          }
+        }
+      },
+      "Output": {
+        "GetStore": "{% $states.result %}"
+      },
+      "Assign": {
+        "inputPayload": "{% $states.context.Execution.Input %}",
+        "isShopOpen": "{% $states.result.Item.storeOpen.BOOL %}"
+      },
+      "Next": "Shop Open?"
+    },
+    "Shop Open?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Next": "Emit - Shop not ready",
+          "Condition": "{% $not($isShopOpen) %}"
+        }
+      ],
+      "Default": "ListExecutions"
+    },
+    "ListExecutions": {
+      "Type": "Task",
+      "Arguments": {
+        "StateMachineArn": "arn:aws:states:us-east-1:787587782604:stateMachine:OrderProcessorWorkflow",
+        "MaxResults": 100,
+        "StatusFilter": "RUNNING"
+      },
+      "Resource": "arn:aws:states:::aws-sdk:sfn:listExecutions",
+      "Next": "Is capacity available?",
+      "Assign": {
+        "isCapacityAvailable": "{% $exists($states.result.Executions[20]) %}"
+      }
+    },
+    "Is capacity available?": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Next": "Emit - Shop not ready",
+          "Condition": "{% $isCapacityAvailable %}"
+        }
+      ],
+      "Default": "Emit - Workflow Started TT"
+    },
+    "Emit - Workflow Started TT": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents.waitForTaskToken",
+      "Arguments": {
+        "Entries": [
+          {
+            "Detail": {
+              "Message": "The workflow waits for your order to be submitted. It emits an event with a unique 'task token'. The token is stored in an Amazon DynamoDB table, along with your order ID.",
+              "TaskToken": "{% $states.context.Task.Token %}",
+              "orderId": "{% $inputPayload.detail.orderId %}",
+              "userId": "{% $inputPayload.detail.userId %}"
+            },
+            "DetailType": "OrderProcessor.WorkflowStarted",
+            "EventBusName": "Serverlesspresso",
+            "Source": "awsserverlessda.serverlesspresso"
+          }
+        ]
+      },
+      "Next": "Generate Order Number",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.Timeout"],
+          "Comment": "Customer timed out",
+          "Output": {
+            "errorCause": "Customer timedout"
+          },
+          "Next": "Emit - error timeout"
+        }
+      ],
+      "HeartbeatSeconds": 900
+    },
+    "Emit - error timeout": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents.waitForTaskToken",
+      "Arguments": {
+        "Entries": [
+          {
+            "Detail": {
+              "Message": "The order timed out. Step Functions waits a set amount of time (5 minutes for a customer, 15 minutes for a barista), no action was taken and so the order is ended.",
+              "orderId": "{% $inputPayload.detail.orderId %}",
+              "userId": "{% $inputPayload.detail.userId %}",
+              "cause": "{% $states.input.errorCause %}"
+            },
+            "DetailType": "OrderProcessor.OrderTimeOut",
+            "EventBusName": "Serverlesspresso",
+            "Source": "awsserverlessda.serverlesspresso"
+          }
+        ]
+      },
+      "End": true
+    },
+    "Generate Order Number": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "serverlesspresso-counting-table",
+        "Key": {
+          "PK": {
+            "S": "orderID"
+          }
+        },
+        "UpdateExpression": "set IDvalue = IDvalue + :val",
+        "ExpressionAttributeValues": {
+          ":val": {
+            "N": "1"
+          }
+        },
+        "ReturnValues": "UPDATED_NEW"
+      },
+      "Next": "Emit - Awaiting Completion TT",
+      "Assign": {
+        "OrderNumber": "{% $states.result.Attributes.IDvalue.N %}"
+      }
+    },
+    "Emit - Awaiting Completion TT": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents.waitForTaskToken",
+      "Arguments": {
+        "Entries": [
+          {
+            "Detail": {
+              "Message": "You pressed 'submit order'. The workflow resumes using the stored 'task token', it generates your order number. It then pauses again, emitting an event with a new 'task token'.",
+              "TaskToken": "{% $states.context.Task.Token %}",
+              "orderId": "{% $inputPayload.detail.orderId %}",
+              "userId": "{% $inputPayload.detail.userId %}",
+              "orderNumber": "{% $OrderNumber %}"
+            },
+            "DetailType": "OrderProcessor.WaitingCompletion",
+            "EventBusName": "Serverlesspresso",
+            "Source": "awsserverlessda.serverlesspresso"
+          }
+        ]
+      },
+      "Next": "Pass",
+      "Catch": [
+        {
+          "ErrorEquals": ["States.Timeout"],
+          "Comment": "Barista timed out",
+          "Output": {
+            "errorCause": "Barista timed out"
+          },
+          "Next": "Emit - error timeout"
+        }
+      ],
+      "HeartbeatSeconds": 900
+    },
+    "Emit - Shop not ready": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Arguments": {
+        "Entries": [
+          {
+            "Detail": {
+              "Message": "The Step functions workflow checks if the shop is open and has capacity to serve a new order by invoking a Lambda function that queries the Shop config service. The shop was not ready, and so a 'not ready' event is emitted to cancel the current order.",
+              "userId": "{% $inputPayload.detail.userId %}"
+            },
+            "DetailType": "OrderProcessor.ShopUnavailable",
+            "EventBusName": "Serverlesspresso",
+            "Source": "awsserverlessda.serverlesspresso"
+          }
+        ]
+      },
+      "End": true
+    },
+    "Pass": {
+      "Type": "Pass",
+      "Next": "Emit - order finished"
+    },
+    "Emit - order finished": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::events:putEvents",
+      "Arguments": {
+        "Entries": [
+          {
+            "Detail": {
+              "Message": "The order has reached the end of the workflow, and so a final event is emitted to alert other services to this.",
+              "orderId": "{% $inputPayload.detail.orderId %}",
+              "userId": "{% $inputPayload.detail.userId %}"
+            },
+            "DetailType": "OrderProcessor.orderFinished",
+            "EventBusName": "Serverlesspresso",
+            "Source": "awsserverlessda.serverlesspresso"
+          }
+        ]
+      },
+      "End": true
+    }
+  },
+  "QueryLanguage": "JSONata"
+}
